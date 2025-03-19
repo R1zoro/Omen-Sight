@@ -8,6 +8,7 @@ bs4 = "*"
 requests = "*"
 mitmproxy = "*"
 pyqt6 = "*"
+websockets = "*"
 
 [dev-packages]
 
