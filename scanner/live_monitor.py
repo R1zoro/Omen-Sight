@@ -35,10 +35,8 @@ class LiveMonitor:
 
         message = detected_issue if detected_issue else f"[MONITORING] Request to: {flow.request.pretty_url}"
 
-        # ✅ Send WebSocket Message (Non-Blocking)
         asyncio.create_task(send_websocket_message(message))
 
-# ✅ WebSocket Communication with GUI
 async def send_websocket_message(message):
     """Send detection messages to the GUI via WebSocket"""
     async with websockets.connect("ws://localhost:8765") as websocket:
@@ -71,6 +69,6 @@ async def run_mitmproxy():
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
-    loop.create_task(websocket_server())  # ✅ Start WebSocket first
-    loop.create_task(run_mitmproxy())  # ✅ Then start mitmproxy
-    loop.run_forever()  # ✅ Keep the event loop running
+    loop.create_task(websocket_server())
+    loop.create_task(run_mitmproxy())
+    loop.run_forever()  #

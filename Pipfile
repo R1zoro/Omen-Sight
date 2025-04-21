@@ -9,6 +9,9 @@ requests = "*"
 mitmproxy = "*"
 pyqt6 = "*"
 websockets = "*"
+whois = "*"
+python-whois = "*"
+dnspython = "*"
 
 [dev-packages]
 
