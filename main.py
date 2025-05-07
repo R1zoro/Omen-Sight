@@ -4,10 +4,9 @@ import argparse
 import subprocess
 import os
 import time
-import random
 import threading
 import re
-
+import random
 from urllib.parse import urlsplit
 from scanner.sql_injection import SQLInjectionScanner
 from scanner.xss import XSSScanner
@@ -16,16 +15,15 @@ from scanner.ssl_checker import scan_ssl
 from scanner.security_checks import SecurityChecksScanner
 from scanner.basic_info import BasicInfoScanner
 from scanner.live_monitor import LiveMonitor
+
 import signal
 
 from PyQt6.QtWidgets import *
 from PyQt6 import uic
-from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QThread, pyqtSignal, QTimer
 from omengui import Ui_MainWindow
-
 from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QFont, QIcon
 
 class OpenRedirectWorker(QThread):
     result_ready = pyqtSignal(str)
@@ -90,7 +88,6 @@ class SequentialScanThread(QThread):
                 error_msg = f"[-] SecCheck Error: An unexpected error occurred: {e}"
                 print(error_msg)
                 self.update_signal.emit(error_msg)
-
             self.update_signal.emit("[+] Security Header Checks Finished.\n")
 
         self.update_signal.emit("[+] All selected scans completed.")
@@ -102,54 +99,21 @@ class OmenSightGUI(QMainWindow):
         self.ui.setupUi(self)
         self.setWindowTitle("OmenSight")
         self.setWindowIcon(QIcon("static/AdobeStock_1380649135_Preview.png"))
+
+        if os.name == 'nt':
+            viewer_font_name = "Consolas"
+        else:
+            viewer_font_name = "DejaVu Sans Mono"
+        font = QFont(viewer_font_name, 10)
+        self.ui.textEdit.setFont(font)
+
         self.ui.ScanButton.clicked.connect(self.run_scan)
         self.ui.LiveButton.clicked.connect(self.run_live_monitoring)
         self.ui.StopButton.clicked.connect(self.stop_live_monitoring)
         self.mitmweb_process = None
+
         self.ui.actionSave.triggered.connect(self.save_output_to_file_via_menu)
 
-
-    def save_output_to_file_via_menu(self):
-        content = self.ui.textEdit.toPlainText()
-        if not content.strip():
-            self.ui.textEdit.append("[!] No output to save.")
-            return
-
-        target_url_raw = self.ui.URLinput.text().strip()
-        suggested_filename = "omensight_scan_results.txt"
-        if target_url_raw:
-            try:
-                parsed_url = urlsplit(target_url_raw)
-
-                hostname_sanitized = re.sub(r'[^\w.\-_]', '_', parsed_url.netloc)
-                if not hostname_sanitized:
-                    hostname_sanitized = "unknown_target"
-
-                timestamp = time.strftime("%Y%m%d-%H%M%S")
-                suggested_filename = f"omensight_{hostname_sanitized}_{timestamp}.txt"
-            except Exception as e:
-                print(f"Error generating suggested filename: {e}")
-
-
-        filePath, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Scan Output",
-            suggested_filename,
-            "Text Files (*.txt);;Log Files (*.log);;All Files (*)"   
-        )
-
-        if filePath:
-            try:
-                with open(filePath, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                self.ui.textEdit.append(f"[+] Output saved successfully to: {filePath}")
-
-            except Exception as e:
-                error_msg = f"[-] Error saving output to {filePath}: {e}"
-                self.ui.textEdit.append(error_msg)
-                print(error_msg)
-        else:
-            self.ui.textEdit.append("[~] Save output operation cancelled by user.")
 
     def run_scan(self):
         target_url = self.ui.URLinput.text().strip()
@@ -157,7 +121,7 @@ class OmenSightGUI(QMainWindow):
             self.ui.textEdit.setPlainText("[-] Invalid URL. Please include the protocol (http:// or https://)")
             return
         self.ui.textEdit.clear()
-        basic_info = BasicInfoScanner(target_url)
+        basic_info = BasicInfoScanner(target_url, progress_callback=self.ui.textEdit.append)
         basic_info_result = basic_info.scan()
         self.ui.textEdit.append(f"[+] Basic Information:\n{basic_info_result}\n")
         self.ui.textEdit.append(f"[+] Starting scan for: {target_url}\n")
@@ -167,12 +131,7 @@ class OmenSightGUI(QMainWindow):
         self.scan_thread.start()
 
     def run_live_monitoring(self):
-
-        if os.name != 'nt':
-            self.ui.textEdit.append("[-] Live monitoring is currently configured for Windows only.")
-            return
-
-        self.ui.textEdit.setPlainText("[+] Starting live monitoring with mitmweb (Windows mode)...\n"
+        self.ui.textEdit.setPlainText("[+] Starting live monitoring with mitmweb...\n"
                                       "Please ensure your browser/system is configured to use mitmproxy (usually http://localhost:8080).\n"
                                       "Mitmweb interface will be available at http://localhost:8081.")
 
@@ -189,11 +148,17 @@ class OmenSightGUI(QMainWindow):
                 self.ui.textEdit.append("[!] An existing mitmweb process seems to be running. Please stop it first or check manually.")
                 return
 
-            self.mitmweb_process = subprocess.Popen(
-                command,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-            self.ui.textEdit.append("[+] Mitmweb process started (PID: {}).".format(self.mitmweb_process.pid))
+            if os.name == 'nt':
+                self.mitmweb_process = subprocess.Popen(
+                    command,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            else:
+                self.mitmweb_process = subprocess.Popen(
+                    command,
+                    start_new_session=True
+                )
+            self.ui.textEdit.append(f"[+] Mitmweb process started (PID: {self.mitmweb_process.pid}).")
 
         except FileNotFoundError:
             self.ui.textEdit.append("[-] Error: mitmweb command not found. Is mitmproxy installed and in your PATH?")
@@ -204,42 +169,75 @@ class OmenSightGUI(QMainWindow):
 
 
     def stop_live_monitoring(self):
-        if os.name != 'nt':
-            self.ui.textEdit.append("[-] Live monitoring stop is currently configured for Windows only.")
-
-            if self.mitmweb_process:
-                 self.mitmweb_process = None
-                 self.ui.textEdit.append("[+] Mitmweb process reference cleared (non-Windows attempt).")
-            return
-
         if self.mitmweb_process and self.mitmweb_process.poll() is None:
             pid = self.mitmweb_process.pid
-            self.ui.textEdit.append(f"\n[+] Attempting to stop mitmweb process (PID: {pid}) on Windows...")
+            self.ui.textEdit.append(f"\n[+] Attempting to stop mitmweb process (PID: {pid})...")
             try:
-                self.mitmweb_process.send_signal(signal.CTRL_BREAK_EVENT)
-                try:
-                    self.mitmweb_process.wait(timeout=5)
-                    self.ui.textEdit.append("[+] Mitmweb process signaled (CTRL_BREAK_EVENT) and exited.")
-                except subprocess.TimeoutExpired:
-                    self.ui.textEdit.append("[!] Mitmweb did not exit after CTRL_BREAK_EVENT. Trying terminate().")
-                    self.mitmweb_process.terminate()
+                if os.name == 'nt':
+                    self.ui.textEdit.append("[~] Sending CTRL_BREAK_EVENT to process group (Windows)...")
+                    self.mitmweb_process.send_signal(signal.CTRL_BREAK_EVENT)
                     try:
-                        self.mitmweb_process.wait(timeout=3)
-                        self.ui.textEdit.append("[+] Mitmweb process terminated.")
+                        self.mitmweb_process.wait(timeout=5)
+                        self.ui.textEdit.append("[+] Mitmweb process signaled (CTRL_BREAK_EVENT) and exited.")
                     except subprocess.TimeoutExpired:
-                        self.ui.textEdit.append("[!] Mitmweb process did not terminate gracefully after terminate(), killing...")
+                        self.ui.textEdit.append("[!] Mitmweb did not exit after CTRL_BREAK_EVENT. Trying terminate().")
+                        self.mitmweb_process.terminate()
+                        try:
+                            self.mitmweb_process.wait(timeout=3)
+                            self.ui.textEdit.append("[+] Mitmweb process terminated.")
+                        except subprocess.TimeoutExpired:
+                            self.ui.textEdit.append("[!] Mitmweb process did not terminate gracefully, killing...")
+                            self.mitmweb_process.kill()
+                            self.mitmweb_process.wait(timeout=3)
+                            self.ui.textEdit.append("[+] Mitmweb process killed.")
+                    except Exception as e_wait:
+                         if self.mitmweb_process.poll() is not None:
+                            self.ui.textEdit.append(f"[+] Mitmweb process exited after signal (wait reported: {e_wait}).")
+                         else:
+                            self.ui.textEdit.append(f"[!] Unknown state after signaling mitmweb (Windows): {e_wait}")
+                else:
+                    pgid = 0
+                    try:
+                        pgid = os.getpgid(pid)
+                        self.ui.textEdit.append(f"[~] Sending SIGTERM to process group {pgid} (POSIX)...")
+                        os.killpg(pgid, signal.SIGTERM)
+                        try:
+                            self.mitmweb_process.wait(timeout=5)
+                            self.ui.textEdit.append("[+] Mitmweb process group signaled (SIGTERM) and likely terminated.")
+                        except subprocess.TimeoutExpired:
+                            self.ui.textEdit.append("[!] Mitmweb process group did not terminate after SIGTERM, trying SIGKILL...")
+                            os.killpg(pgid, signal.SIGKILL)
+                            try:
+                                self.mitmweb_process.wait(timeout=3)
+                                self.ui.textEdit.append("[+] Mitmweb process group killed (SIGKILL).")
+                            except subprocess.TimeoutExpired:
+                                self.ui.textEdit.append("[!] Mitmweb process group still running after SIGKILL (unusual).")
+                            except Exception as e_kill_wait:
+                                if self.mitmweb_process.poll() is not None:
+                                    self.ui.textEdit.append(f"[+] Mitmweb process exited after SIGKILL (wait reported: {e_kill_wait}).")
+                                else:
+                                    self.ui.textEdit.append(f"[!] Unknown state after SIGKILL (POSIX): {e_kill_wait}")
+                        except Exception as e_wait:
+                            if self.mitmweb_process.poll() is not None:
+                                self.ui.textEdit.append(f"[+] Mitmweb process exited after SIGTERM (wait reported: {e_wait}).")
+                            else:
+                                self.ui.textEdit.append(f"[!] Unknown state after SIGTERM (POSIX): {e_wait}")
+                    except ProcessLookupError:
+                        self.ui.textEdit.append(f"[~] Process {pid} not found for PGID lookup (likely already gone). Checking Popen status...")
+                        if self.mitmweb_process.poll() is None:
+                             self.ui.textEdit.append(f"[!] Process {pid} Popen object still active but getpgid failed. Attempting direct terminate/kill.")
+                             self.mitmweb_process.terminate()
+                             self.mitmweb_process.kill()
+                             self.mitmweb_process.wait(timeout=1)
+                    except Exception as e_pgid:
+                        self.ui.textEdit.append(f"[!] Error during POSIX process group termination for PID {pid}: {e_pgid}")
+                        self.ui.textEdit.append("[~] Attempting direct terminate/kill on Popen object as fallback...")
+                        self.mitmweb_process.terminate()
                         self.mitmweb_process.kill()
-                        self.mitmweb_process.wait(timeout=3)
-                        self.ui.textEdit.append("[+] Mitmweb process killed.")
-                except Exception as e_wait:
-                     if self.mitmweb_process.poll() is not None:
-                        self.ui.textEdit.append(f"[+] Mitmweb process exited after signal (wait reported: {e_wait}).")
-                     else:
-                        self.ui.textEdit.append(f"[!] Unknown state after signaling mitmweb: {e_wait}")
-
+                        self.mitmweb_process.wait(timeout=1)
 
             except ProcessLookupError:
-                self.ui.textEdit.append("[+] Mitmweb process was not found (likely already terminated).")
+                self.ui.textEdit.append("[+] Mitmweb process was not found (likely already terminated before stop action).")
             except Exception as e:
                 self.ui.textEdit.append(f"[!] Error stopping mitmweb: {e}")
             finally:
@@ -251,6 +249,45 @@ class OmenSightGUI(QMainWindow):
             self.ui.textEdit.append("\n[+] Mitmweb process not running or not tracked by the application.")
 
         self.ui.textEdit.append("Live monitoring stop sequence initiated.")
+
+
+    def save_output_to_file_via_menu(self):
+        content = self.ui.textEdit.toPlainText()
+        if not content.strip():
+            self.ui.textEdit.append("[!] No output to save.")
+            return
+
+        target_url_raw = self.ui.URLinput.text().strip()
+        suggested_filename = "omensight_scan_results.txt"
+        if target_url_raw:
+            try:
+                parsed_url = urlsplit(target_url_raw)
+                hostname_sanitized = re.sub(r'[^\w.\-_]', '_', parsed_url.netloc)
+                if not hostname_sanitized:
+                    hostname_sanitized = "unknown_target"
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                suggested_filename = f"omensight_{hostname_sanitized}_{timestamp}.txt"
+            except Exception as e:
+                print(f"Error generating suggested filename: {e}")
+
+        filePath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Scan Output",
+            suggested_filename,
+            "Text Files (*.txt);;Log Files (*.log);;All Files (*)"
+        )
+
+        if filePath:
+            try:
+                with open(filePath, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                self.ui.textEdit.append(f"[+] Output saved successfully to: {filePath}")
+            except Exception as e:
+                error_msg = f"[-] Error saving output to {filePath}: {e}"
+                self.ui.textEdit.append(error_msg)
+                print(error_msg)
+        else:
+            self.ui.textEdit.append("[~] Save output operation cancelled by user.")
 
     def _log_to_gui(self, message, level="info"):
         self.ui.textEdit.append(message)
