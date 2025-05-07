@@ -1,74 +1,83 @@
+# --- scanner/live_monitor.py ---
+
 from mitmproxy import http
+from mitmproxy import ctx
 import re
-import sys
-import asyncio
-import json
-import websockets
 
 class LiveMonitor:
     def __init__(self):
-        """Initialize Live Monitoring for SQLi and XSS"""
+        # ... (sqli_patterns, xss_patterns remain the same) ...
         self.sqli_patterns = [
-            r"union\s+select",
-            r"or\s+\d+=\d+",
-            r"'--",
-            r"sleep\(\d+\)",
+            r"union\s+select", r"or\s+1=1", r"'\s*--", r'"\s*--',
+            r"sleep\s*\(", r"benchmark\s*\(", r"select\s+.*\s+from",
+            r"insert\s+into", r"delete\s+from", r"update\s+.*\s+set",
         ]
         self.xss_patterns = [
-            r"<script>.*?</script>",
-            r"javascript:",
-            r"onerror=.*?",
+            r"<script.*?>", r"javascript\s*:", r"onerror\s*=",
+            r"onload\s*=", r"onmouseover\s*=", r"<iframe.*?>",
+            r"<svg.*?>", r"<\w+\s+on\w+\s*=",
         ]
 
-    async def request(self, flow: http.HTTPFlow):
-        """Intercept live HTTP requests and check for SQL Injection & XSS"""
-        request_data = flow.request.text
-        detected_issue = None
+    def load(self, loader):
+        ctx.log.info("[OmenSight LiveMonitor] Addon loaded and active.")
 
-        for pattern in self.sqli_patterns:
-            if re.search(pattern, request_data, re.IGNORECASE):
-                detected_issue = f"⚠ Live SQL Injection detected: {flow.request.pretty_url}"
+    def request(self, flow: http.HTTPFlow) -> None:
+        # ... (request analysis logic remains the same) ...
+        detected_issue_type = None
+        matched_pattern = None
 
-        for pattern in self.xss_patterns:
-            if re.search(pattern, request_data, re.IGNORECASE):
-                detected_issue = f"⚠ Live XSS detected: {flow.request.pretty_url}"
+        # Analyze Query Parameters
+        for name, value in flow.request.query.fields:
+            for pattern in self.sqli_patterns:
+                if re.search(pattern, value, re.IGNORECASE):
+                    detected_issue_type = "SQLi (Query)"
+                    matched_pattern = pattern
+                    break
+            if detected_issue_type: break
+            if not detected_issue_type:
+                for pattern in self.xss_patterns:
+                    if re.search(pattern, value, re.IGNORECASE):
+                        detected_issue_type = "XSS (Query)"
+                        matched_pattern = pattern
+                        break
+            if detected_issue_type: break
 
-        message = detected_issue if detected_issue else f"[MONITORING] Request to: {flow.request.pretty_url}"
+        if not detected_issue_type and flow.request.content:
+            content_type = flow.request.headers.get("content-type", "").lower()
+            if "application/x-www-form-urlencoded" in content_type or \
+               "application/json" in content_type or \
+               "multipart/form-data" in content_type or \
+               "text/" in content_type:
+                request_body_text = flow.request.get_text(strict=False)
+                if request_body_text:
+                    for pattern in self.sqli_patterns:
+                        if re.search(pattern, request_body_text, re.IGNORECASE):
+                            detected_issue_type = "SQLi (Body)"
+                            matched_pattern = pattern
+                            break
+                    if not detected_issue_type:
+                        for pattern in self.xss_patterns:
+                            if re.search(pattern, request_body_text, re.IGNORECASE):
+                                detected_issue_type = "XSS (Body)"
+                                matched_pattern = pattern
+                                break
+        if detected_issue_type:
+            log_message = (
+                f"[OmenSight] Potential {detected_issue_type} detected in request to: {flow.request.pretty_url} "
+                f"(Pattern: {matched_pattern})"
+            )
+            ctx.log.warn(log_message)
+            if "SQLi" in detected_issue_type:
+                flow.marked = ":syringe:"
+                flow.metadata["omensight_finding"] = f"Potential {detected_issue_type}"
+            elif "XSS" in detected_issue_type:
+                flow.marked = ":warning:"
+                flow.metadata["omensight_finding"] = f"Potential {detected_issue_type}"
 
-        asyncio.create_task(send_websocket_message(message))
+    def done(self): # Addon lifecycle event
+        """Called when the addon is shutting down."""
+        ctx.log.info("[OmenSight LiveMonitor] Addon shutting down.")
 
-async def send_websocket_message(message):
-    """Send detection messages to the GUI via WebSocket"""
-    async with websockets.connect("ws://localhost:8765") as websocket:
-        await websocket.send(json.dumps({"message": message}))
-
-async def websocket_server():
-    """WebSocket server to communicate with the GUI"""
-    async with websockets.serve(handle_client, "localhost", 8765):
-        print("[+] WebSocket server started on ws://localhost:8765")
-        await asyncio.Future()  # Keep running
-
-async def handle_client(websocket, path):
-    """Handle incoming messages from the GUI"""
-    try:
-        async for message in websocket:
-            data = json.loads(message)
-            if data.get("command") == "stop":
-                print("[+] Stopping Live Monitoring...")
-                await websocket.send(json.dumps({"message": "Live Monitoring Stopped"}))
-                return  # Exit when stop command is received
-    except websockets.exceptions.ConnectionClosed:
-        print("[!] WebSocket connection closed.")
-
-async def run_mitmproxy():
-    """Start mitmproxy and WebSocket together"""
-    print("[+] Starting mitmproxy with live monitoring...")
-    loop = asyncio.get_running_loop()
-    mitmproxy_task = loop.run_in_executor(None, lambda: sys.exit(os.system("mitmproxy -s scanner/live_monitor.py --set web_open_browser=false")))
-    await mitmproxy_task
-
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(websocket_server())
-    loop.create_task(run_mitmproxy())
-    loop.run_forever()  #
+addons = [
+    LiveMonitor()
+]
