@@ -1,18 +1,15 @@
-# --- START OF REVISED scanner/security_checks.py ---
+
 
 import requests
 import ssl
 import socket
-import dns.resolver # type: ignore
-import dns.exception # type: ignore
+import dns.resolver
+import dns.exception
 from urllib.parse import urlparse, urljoin
 import re
-from datetime import datetime # For HSTS check potentially
-
-# Assuming progress_callback is passed and a _log function exists or is added.
+from datetime import datetime
 
 class SecurityChecksScanner:
-    # Add progress_callback and timeout
     def __init__(self, target_url, progress_callback=None, request_timeout=15):
         self.target_url = target_url
         self.progress_callback = progress_callback
@@ -20,7 +17,6 @@ class SecurityChecksScanner:
 
         self.parsed_url = urlparse(target_url)
         self.hostname = self.parsed_url.netloc
-        # Remove port for DNS/Host checks
         if ':' in self.hostname:
             self.hostname = self.hostname.split(':')[0]
 
@@ -28,13 +24,13 @@ class SecurityChecksScanner:
         self.session.headers.update({
             "User-Agent": "OmenSight Scanner/1.0"
         })
-        # Allow scans on sites with self-signed or problematic SSL certs for header checks etc.
+
         self.session.verify = False
         if not self.session.verify:
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-        self.results = [] # Store findings as strings or dicts
+        self.results = []
 
     def _log(self, message, level="info"):
         """Helper for logging to console and GUI callback."""
@@ -53,23 +49,20 @@ class SecurityChecksScanner:
         try:
             if method.lower() == "head":
                  response = self.session.head(url, timeout=self.request_timeout, headers=req_headers, allow_redirects=allow_redirects)
-            else: # Default to GET
+            else:
                  response = self.session.get(url, timeout=self.request_timeout, headers=req_headers, allow_redirects=allow_redirects, stream=stream)
-            # Don't raise for status here, as we want to analyze error responses too (like 404 for security.txt)
+
             return response
         except requests.exceptions.Timeout:
             self._log(f"Timeout connecting to {url}", level="error")
             return None
         except requests.exceptions.ConnectionError as e:
-             # Log only distinct connection errors
              self._log(f"Connection error for {url}: {e}", level="error")
              return None
         except requests.exceptions.RequestException as e:
             self._log(f"Request error for {url}: {e}", level="error")
-            if hasattr(e, 'response'): return e.response # Return error response if available
+            if hasattr(e, 'response'): return e.response
             return None
-
-    # --- Check Methods ---
 
     def check_security_headers(self, response):
         """Analyzes security headers from a requests.Response object."""
@@ -78,14 +71,12 @@ class SecurityChecksScanner:
             return
 
         self._log(f"Analyzing headers for {response.url} (Status: {response.status_code})", level="progress")
-        headers = response.headers # Case-insensitive dict-like object
+        headers = response.headers
         findings = []
 
-        # Helper for explanations
         def add_finding(name, status, detail="", explanation="", level="info"):
             msg = f"    {name}: {status}"
             if detail: msg += f" ({detail})"
-            # Prepend marker based on level
             marker = ""
             if level == "vuln": marker = "[!] "
             elif level == "warn": marker = "[?] "
@@ -94,7 +85,6 @@ class SecurityChecksScanner:
             findings.append(f"{marker}{msg}")
             if explanation: findings.append(f"        └── Why: {explanation}")
 
-        # 1. Strict-Transport-Security (HSTS)
         hsts = headers.get('Strict-Transport-Security')
         if hsts:
             max_age = 0
@@ -108,31 +98,29 @@ class SecurityChecksScanner:
             if includes_subdomains: detail += "; includeSubDomains"
             if preload: detail += "; preload"
 
-            if max_age >= 31536000: # Good practice: >= 1 year
+            if max_age >= 31536000:
                 add_finding("Strict-Transport-Security", "Present (Strong)", detail, level="info")
             elif max_age > 0:
                 add_finding("Strict-Transport-Security", "Present (Weak max-age)", detail, level="warn", explanation="max-age should ideally be >= 31536000 (1 year).")
             else:
                  add_finding("Strict-Transport-Security", "Present (max-age missing or 0)", detail, level="warn", explanation="HSTS header requires a positive max-age directive.")
-        elif self.parsed_url.scheme == 'https': # Only relevant for HTTPS sites
+        elif self.parsed_url.scheme == 'https':
             add_finding("Strict-Transport-Security", "Missing", level="warn", explanation="HSTS enforces HTTPS connections, reducing risk of downgrade attacks.")
         else:
              add_finding("Strict-Transport-Security", "N/A (Site is not HTTPS)", level="info")
 
-        # 2. Content-Security-Policy (CSP)
         csp = headers.get('Content-Security-Policy')
         csp_report_only = headers.get('Content-Security-Policy-Report-Only')
         if csp:
             detail = f"Value: {csp[:100]}{'...' if len(csp)>100 else ''}"
-            # Basic checks for common weaknesses (can be expanded significantly)
+
             weak = False
             explanation = ""
             if "'unsafe-inline'" in csp and ("script-src" in csp or "default-src" in csp):
                 weak = True; explanation += " Allows inline scripts ('unsafe-inline'). "
             if "'unsafe-eval'" in csp and ("script-src" in csp or "default-src" in csp):
                 weak = True; explanation += " Allows eval ('unsafe-eval'). "
-            # Check for overly broad sources like '*' or 'https:' in critical directives
-            # This requires more parsing... simplified check for now
+
             if "script-src *" in csp or "default-src *" in csp:
                 weak = True; explanation += " Allows scripts from any source (*)."
 
@@ -146,7 +134,6 @@ class SecurityChecksScanner:
         else:
             add_finding("Content-Security-Policy", "Missing", level="warn", explanation="CSP helps prevent XSS and other injection attacks.")
 
-        # 3. X-Frame-Options
         xfo = headers.get('X-Frame-Options')
         if xfo:
              xfo_val = xfo.strip().upper()
@@ -159,7 +146,6 @@ class SecurityChecksScanner:
         else:
              add_finding("X-Frame-Options", "Missing", level="warn", explanation="Prevents clickjacking by controlling frame embedding. Use DENY or SAMEORIGIN, or CSP frame-ancestors.")
 
-        # 4. X-Content-Type-Options
         xcto = headers.get('X-Content-Type-Options')
         if xcto and xcto.strip().lower() == 'nosniff':
             add_finding("X-Content-Type-Options", "Present (nosniff)", level="info", explanation="Prevents browsers from MIME-sniffing response away from declared Content-Type.")
@@ -168,7 +154,6 @@ class SecurityChecksScanner:
         else:
              add_finding("X-Content-Type-Options", "Missing", level="warn", explanation="Should be set to 'nosniff' to prevent MIME-sniffing attacks.")
 
-        # 5. Referrer-Policy
         refpol = headers.get('Referrer-Policy')
         common_policies = ['no-referrer', 'no-referrer-when-downgrade', 'origin', 'origin-when-cross-origin', 'same-origin', 'strict-origin', 'strict-origin-when-cross-origin', 'unsafe-url']
         if refpol:
@@ -179,17 +164,15 @@ class SecurityChecksScanner:
         else:
             add_finding("Referrer-Policy", "Missing", level="info", explanation="Controls how much referrer information is sent with requests. Consider setting a policy like 'strict-origin-when-cross-origin'.")
 
-        # 6. Permissions-Policy / Feature-Policy
         pp = headers.get('Permissions-Policy') or headers.get('Feature-Policy')
         if pp:
             add_finding("Permissions-Policy", "Present", f"Value: {pp[:100]}{'...' if len(pp)>100 else ''}", level="info", explanation="Controls which browser features (camera, microphone, etc.) can be used.")
         else:
             add_finding("Permissions-Policy", "Missing", level="info", explanation="Consider defining a Permissions-Policy to restrict unnecessary browser feature access.")
 
-        # 7. Server Information Disclosure
         server = headers.get('Server')
         xpb = headers.get('X-Powered-By')
-        xasp = headers.get('X-AspNet-Version') # Common ASP.NET disclosure
+        xasp = headers.get('X-AspNet-Version')
 
         details = []
         if server: details.append(f"Server: {server}")
@@ -201,25 +184,23 @@ class SecurityChecksScanner:
         else:
              add_finding("Server Info Disclosure", "Not Obvious", level="info", explanation="Server/technology headers appear removed or generic (good practice).")
 
-        # 8. Basic WAF / CDN Detection Headers
         cdn_waf_headers = {
-            'Server': [('cloudflare', 'Cloudflare'), ('AkamaiGHost', 'Akamai'), ('ECS', 'Akamai'), ('ECAcc', 'Akamai'), ('Incapsula', 'Incapsula'), ('Sucuri/Cloudproxy', 'Sucuri'), ('awselb', 'AWS ELB'), ('Azura', 'Azure?'), ('GSE', 'Google')], # Check server header value patterns
-            'X-CDN': [('.*', 'Generic CDN Header')], # Presence check
+            'Server': [('cloudflare', 'Cloudflare'), ('AkamaiGHost', 'Akamai'), ('ECS', 'Akamai'), ('ECAcc', 'Akamai'), ('Incapsula', 'Incapsula'), ('Sucuri/Cloudproxy', 'Sucuri'), ('awselb', 'AWS ELB'), ('Azura', 'Azure?'), ('GSE', 'Google')],
+            'X-CDN': [('.*', 'Generic CDN Header')],
             'X-Sucuri-ID': [('.*', 'Sucuri WAF')],
             'X-Proxy-ID': [('.*', 'Incapsula WAF?')],
             'X-Iinfo': [('.*', 'Incapsula WAF?')],
             'X-Cache': [('.*', 'Potential Proxy/CDN Cache')],
             'Via': [('.*', 'Proxy Server Detected')],
-            'Set-Cookie': [('^incap_ses_', 'Incapsula Cookie'), ('^visid_incap_', 'Incapsula Cookie'), ('^cf_clearance', 'Cloudflare Cookie'), ('AWSALB', 'AWS ELB Cookie')], # Check cookie name patterns
+            'Set-Cookie': [('^incap_ses_', 'Incapsula Cookie'), ('^visid_incap_', 'Incapsula Cookie'), ('^cf_clearance', 'Cloudflare Cookie'), ('AWSALB', 'AWS ELB Cookie')],
         }
         detected_fw = []
         for header_name, patterns in cdn_waf_headers.items():
             header_value = headers.get(header_name)
             if header_value:
                  for pattern, fw_name in patterns:
-                      if header_name == 'Set-Cookie': # Special handling for Set-Cookie which can appear multiple times
-                           # Need original response obj to get all Set-Cookie headers
-                           cookies = response.raw.headers.getlist('Set-Cookie') # Use raw to get list
+                      if header_name == 'Set-Cookie':
+                           cookies = response.raw.headers.getlist('Set-Cookie')
                            for cookie_str in cookies:
                                 if re.search(pattern, cookie_str):
                                      if fw_name not in detected_fw: detected_fw.append(fw_name)
@@ -241,7 +222,6 @@ class SecurityChecksScanner:
             return
 
         self._log(f"Analyzing cookies for {response.url}", level="progress")
-        # Use response.raw.headers.getlist to handle multiple Set-Cookie headers
         cookie_headers = response.raw.headers.getlist('Set-Cookie')
         findings = []
 
@@ -250,7 +230,7 @@ class SecurityChecksScanner:
         else:
             findings.append(f"    Found {len(cookie_headers)} Set-Cookie header(s):")
             for i, cookie_str in enumerate(cookie_headers):
-                 findings.append(f"      Cookie #{i+1}: {cookie_str.split(';')[0]}") # Show name=value part
+                 findings.append(f"      Cookie #{i+1}: {cookie_str.split(';')[0]}")
 
                  flags = []
                  if 'HttpOnly' in cookie_str: flags.append("HttpOnly")
@@ -262,7 +242,6 @@ class SecurityChecksScanner:
 
                  findings.append(f"        Flags: {', '.join(flags)}")
 
-                 # Security checks
                  if 'Secure' not in cookie_str and self.parsed_url.scheme == 'https':
                      findings.append("        [!] Warning: Cookie missing 'Secure' flag on HTTPS site.")
                      self._log("Cookie missing Secure flag on HTTPS.", level="warn")
@@ -284,26 +263,24 @@ class SecurityChecksScanner:
         for path in paths_to_check:
             sec_txt_url = urljoin(self.target_url, path)
             self._log(f"Checking for security.txt at {sec_txt_url}", level="progress")
-            response = self._make_request(sec_txt_url, allow_redirects=False) # Don't follow redirects
+            response = self._make_request(sec_txt_url, allow_redirects=False)
 
             if response and response.status_code == 200:
                  content_type = response.headers.get('Content-Type', '').lower()
                  if 'text/plain' in content_type:
                      self._log(f"security.txt found at {sec_txt_url} with correct Content-Type.", level="info")
                      findings.append(f"    [+] Found at {sec_txt_url} (Status: 200, Content-Type: {content_type})")
-                     # Optionally display content summary
                      content_summary = response.text.splitlines()[:10]
                      if len(response.text.splitlines()) > 10: content_summary.append("    ... (content truncated)")
                      findings.extend([f"        {line}" for line in content_summary])
                      found = True
-                     break # Stop checking paths once found correctly
+                     break
                  else:
                      self._log(f"File found at {sec_txt_url}, but Content-Type is not text/plain ('{content_type}').", level="warn")
                      findings.append(f"    [?] Found at {sec_txt_url} (Status: 200), but incorrect Content-Type: {content_type}")
-                     # Don't mark as 'found=True' if content-type is wrong
-            # Don't report 404s explicitly unless none are found at all
 
-        if not found and not findings: # No 200 response on any path, and no warnings logged
+
+        if not found and not findings:
             findings.append("    Not found at standard locations.")
             self._log("security.txt not found at standard locations.", level="info")
 
@@ -316,33 +293,32 @@ class SecurityChecksScanner:
         chain = []
         current_url = self.target_url
         max_redirects = 10
-        headers_to_send = {"User-Agent": self.session.headers["User-Agent"]} # Use consistent UA
+        headers_to_send = {"User-Agent": self.session.headers["User-Agent"]}
 
         try:
             for i in range(max_redirects):
-                 response = self._make_request(current_url, method="head", allow_redirects=False, headers=headers_to_send) # Use HEAD for efficiency
+                 response = self._make_request(current_url, method="head", allow_redirects=False, headers=headers_to_send)
 
-                 if response is None: # Request failed
+                 if response is None:
                      chain.append(f"    -> Error reaching {current_url}")
                      break
 
                  status_code = response.status_code
                  chain.append(f"    -> {current_url} ({status_code})")
 
-                 if 300 <= status_code <= 399: # Is redirect?
+                 if 300 <= status_code <= 399:
                      location = response.headers.get('Location')
                      if not location:
                          chain.append(f"    [! Error] Redirect status code but no Location header!")
                          break
-                     # Resolve relative redirects
                      next_url = urljoin(current_url, location)
-                     if next_url == current_url: # Avoid infinite loop on self-redirect
+                     if next_url == current_url:
                           chain.append(f"    [! Error] Redirect loop detected to same URL.")
                           break
                      current_url = next_url
-                 else: # Not a redirect, chain ends here
+                 else:
                      break
-            else: # Loop finished without break (max redirects reached)
+            else:
                  chain.append(f"    [! Warning] Maximum redirects ({max_redirects}) reached.")
 
         except Exception as e:
@@ -358,28 +334,24 @@ class SecurityChecksScanner:
             return
         self._log(f"Performing extended DNS lookup for {self.hostname}", level="progress")
 
-        record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'CNAME', 'SOA', 'CAA'] # Added SOA, CAA
+        record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'CNAME', 'SOA', 'CAA']
         dns_results = {}
 
         for r_type in record_types:
             try:
                 self._log(f"Querying {r_type} records...", level="progress")
-                # Use a slightly longer timeout for DNS? Default is often short.
-                answers = dns.resolver.resolve(self.hostname, r_type, lifetime=self.request_timeout * 0.5) # Use half request timeout
+                answers = dns.resolver.resolve(self.hostname, r_type, lifetime=self.request_timeout * 0.5)
 
                 if r_type == 'MX':
                     dns_results[r_type] = sorted([f"{r.preference} {r.exchange.to_text()}" for r in answers])
                 elif r_type == 'TXT':
                     dns_results[r_type] = ["\"" + " ".join(s.decode('utf-8', 'ignore') for s in rdata.strings) + "\"" for rdata in answers]
                 elif r_type == 'SOA':
-                     # SOA record has multiple fields (mname, rname, serial, refresh, retry, expire, minimum)
-                     # Just display the first one's basic info for summary
                      r = answers[0]
                      dns_results[r_type] = [f"MNAME:{r.mname}, RNAME:{r.rname}, Serial:{r.serial}"]
                 elif r_type == 'CAA':
-                     # CAA format: flags issuer critical_value
                      dns_results[r_type] = [f"{r.flags} {r.tag.decode()} \"{r.value.decode()}\"" for r in answers]
-                else: # A, AAAA, NS, CNAME
+                else:
                     dns_results[r_type] = sorted([r.to_text() for r in answers])
                 self._log(f"Found {len(dns_results[r_type])} {r_type} records.", level="info")
             except dns.resolver.NoAnswer:
@@ -387,7 +359,7 @@ class SecurityChecksScanner:
                 self._log(f"No {r_type} records found.", level="info")
             except dns.resolver.NXDOMAIN:
                 self._log(f"Domain {self.hostname} does not exist (NXDOMAIN). Aborting further DNS lookups.", level="error")
-                dns_results = {"Error": "NXDOMAIN"} # Signal error
+                dns_results = {"Error": "NXDOMAIN"}
                 break
             except dns.exception.Timeout:
                 dns_results[r_type] = ["Query Timed Out"]
@@ -396,7 +368,6 @@ class SecurityChecksScanner:
                 dns_results[r_type] = [f"Error: {type(e).__name__}"]
                 self._log(f"Error querying {r_type} records: {e}", level="error")
 
-        # Format results
         if dns_results.get("Error"):
              self.results.append(f"    Error: {dns_results['Error']}")
         else:
@@ -408,67 +379,46 @@ class SecurityChecksScanner:
                  else:
                      self.results.append(f"    {record_type}: None found")
 
-    # --- Main Scan Orchestration ---
 
     def run_all_checks(self):
         """Runs all implemented security checks."""
-        self.results = [] # Clear previous results for this run
+        self.results = []
         self._log(f"Starting security checks for {self.target_url}", level="info")
-
-        # Initial Request (needed for headers, cookies)
-        # Follow redirects here to analyze the final landing page's headers/cookies
         self._log("Fetching initial page...", level="progress")
         initial_response = self._make_request(self.target_url, allow_redirects=True)
 
-        # --- Section: HTTP Headers ---
         self.results.append("\n--- Security Headers ---")
         if initial_response:
              self.check_security_headers(initial_response)
         else:
              self.results.append("    Could not fetch URL to check headers.")
 
-        # --- Section: Cookies ---
         self.results.append("\n--- Cookies ---")
         if initial_response:
              self.check_cookies(initial_response)
         else:
              self.results.append("    Could not fetch URL to check cookies.")
 
-        # --- Section: File Checks ---
         self.results.append("\n--- Common Security Files ---")
         self.check_security_txt()
 
-        # --- Section: Redirects ---
         self.results.append("\n--- Redirect Chain ---")
         self.check_redirect_chain()
 
-        # --- Section: DNS ---
         self.results.append("\n--- DNS Records ---")
         self.check_dns_records()
 
-        # --- Add more check sections here ---
-        # e.g., Tech Stack, Whois (if moved from basic_info), etc.
-
-
         self._log("Security checks finished.", level="info")
-
-        # Return combined results
         if not self.results:
             return "No security check results generated (check logs for errors)."
         else:
-             # Filter out potential None entries if any check appends None erroneously
              final_results = [str(item) for item in self.results if item is not None]
              return "\n".join(final_results)
-
-
-# --- Standalone function for main.py compatibility ---
-# Ensure this exists if main.py calls it directly
 def check_security_headers(target_url, progress_callback=None):
      """Standalone wrapper for basic header checks (can be expanded)."""
      scanner = SecurityChecksScanner(target_url, progress_callback=progress_callback)
-     # For just headers, we need to make the request first
      response = scanner._make_request(target_url, allow_redirects=True)
-     scanner.results = [] # Clear results specific to this call
+     scanner.results = []
      scanner.results.append("\n--- Security Headers ---")
      if response:
          scanner.check_security_headers(response)
@@ -476,11 +426,7 @@ def check_security_headers(target_url, progress_callback=None):
          scanner.results.append("    Could not fetch URL to check headers.")
      return "\n".join(scanner.results)
 
-# --- Example usage block ---
 if __name__ == '__main__':
-    # target = "https://github.com"
-    # target = "https://expired.badssl.com/" # For HSTS tests on HTTPS
-    # target = "http://httpbin.org/redirect/3" # For redirect tests
     target = "https://google.com"
 
     print(f"--- Testing SecurityChecksScanner on {target} ---")
@@ -492,6 +438,3 @@ if __name__ == '__main__':
 
     print("\n--- Scan Results ---")
     print(results)
-
-
-# --- END OF REVISED scanner/security_checks.py ---

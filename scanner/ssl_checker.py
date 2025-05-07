@@ -1,11 +1,10 @@
-# --- START OF REVISED scanner/ssl_checker.py ---
 
 import socket
 import ssl
-import requests # Keep this import for session init consistency
+import requests
 from urllib.parse import urlparse, urljoin
-from datetime import datetime, timezone # For date comparisons
-from bs4 import BeautifulSoup # Keep import in case needed elsewhere? No, remove if only for Title.
+from datetime import datetime, timezone
+from bs4 import BeautifulSoup
 
 class SSLChecker:
     def __init__(self, target_url, progress_callback=None, request_timeout=10):
@@ -19,9 +18,8 @@ class SSLChecker:
             self.hostname = self.hostname.split(':')[0]
         self.port = self.parsed_url.port or 443
 
-        self.session = requests.Session() # Init session even if not directly used by SSL check
+        self.session = requests.Session()
         self.session.headers.update({"User-Agent": "OmenSight Scanner/1.0"})
-        # SSL Context setup happens in get_ssl_info
 
 
     def _log(self, message, level="info"):
@@ -97,19 +95,15 @@ class SSLChecker:
             self._log("SSL scan finished due to error.", level="info")
             return "\n".join(output_lines)
 
-        # --- Handle potential verification error reporting ---
         if ssl_info.get("verification_error"):
              output_lines.append("-" * 30)
-             output_lines.append("[+] Connection/Verification Status:") # Changed header
+             output_lines.append("[+] Connection/Verification Status:")
              output_lines.append(f"    [!] Verification Failed: {ssl_info['verification_error']}")
-             # Log only once
-             # self._log(f"SSL Verification Failed: {ssl_info['verification_error']}", level="vuln") # Already logged in get_ssl_info
 
-        # --- Report connection details (Protocol, Cipher) ---
         protocol = ssl_info.get("protocol")
         cipher_name = ssl_info.get("cipher_name")
-        if protocol or cipher_name or ssl_info.get("verification_error"): # Show section even if only error exists
-            if not ssl_info.get("verification_error"): # Avoid double section header if error printed above
+        if protocol or cipher_name or ssl_info.get("verification_error"):
+            if not ssl_info.get("verification_error"):
                  output_lines.append("-" * 30)
                  output_lines.append("[+] Connection Details:")
 
@@ -121,10 +115,7 @@ class SSLChecker:
                     self._log(f"Weak protocol {protocol} detected.", level="vuln")
                 elif protocol in ["TLSv1.2", "TLSv1.3"]:
                     output_lines.append(f"    [+] Strong Protocol: {protocol} is considered secure.")
-                # else: # No need for unknown case unless debugging
-                #     output_lines.append(f"    Unknown or non-standard protocol: {protocol}")
 
-        # --- Report certificate details ---
         cert = ssl_info.get("certificate")
         output_lines.append("-" * 30)
         output_lines.append("[+] Certificate Details:")
@@ -132,18 +123,16 @@ class SSLChecker:
             reason = "Verification failed" if ssl_info.get("verification_error") else "Connection/Retrieval failed"
             output_lines.append(f"    Could not retrieve certificate details ({reason}).")
         else:
-            # Subject and Issuer
+
             subject_str = ", ".join([f"{item[0][0]}={item[0][1]}" for item in cert.get('subject', [])])
             issuer_str = ", ".join([f"{item[0][0]}={item[0][1]}" for item in cert.get('issuer', [])])
             output_lines.append(f"    Subject: {subject_str if subject_str else 'N/A'}")
             output_lines.append(f"    Issuer: {issuer_str if issuer_str else 'N/A'}")
 
-            # Self-signed check
             if cert.get("issuer") == cert.get("subject"):
                 output_lines.append("    [!] Certificate appears to be self-signed.")
                 self._log("Self-signed certificate detected.", level="vuln")
 
-            # --- ADDED: Validity Period (Not Before) ---
             if 'notBefore' in cert:
                  try:
                       start_timestamp = ssl.cert_time_to_seconds(cert['notBefore'])
@@ -152,7 +141,6 @@ class SSLChecker:
                  except Exception as e:
                       output_lines.append(f"    Could not parse start date: {cert['notBefore']} (Error: {e})")
 
-            # Expiration (Not After - existing code)
             if 'notAfter' in cert:
                 try:
                     expiry_timestamp = ssl.cert_time_to_seconds(cert['notAfter'])
@@ -168,21 +156,18 @@ class SSLChecker:
                 except Exception as e:
                     output_lines.append(f"    Could not parse expiration date: {cert['notAfter']} (Error: {e})")
 
-            # Hostname Matching Check Result (from get_ssl_info)
             hostname_match_passed = ssl_info.get("hostname_match")
             if hostname_match_passed is True:
                  output_lines.append("    [+] Certificate hostname check passed (during handshake).")
             elif hostname_match_passed is False:
                  output_lines.append(f"    [!] Certificate hostname MISMATCH for '{self.hostname}' (detected during handshake).")
                  self._log(f"Certificate hostname mismatch for '{self.hostname}'.", level="vuln")
-            else: # None (e.g., verification failed for other reasons)
+            else:
                  output_lines.append(f"    [?] Certificate hostname check inconclusive (Verification Error: {ssl_info.get('verification_error', 'Unknown')})")
 
-            # --- ADDED: Serial Number ---
             if 'serialNumber' in cert:
                 output_lines.append(f"    Serial Number: {cert['serialNumber']}")
 
-            # --- ADDED: Subject Alternative Names (SANs) ---
             if 'subjectAltName' in cert:
                 sans = [item[1] for item in cert['subjectAltName'] if item[0].lower() == 'dns']
                 if sans:
@@ -199,19 +184,13 @@ class SSLChecker:
         self._log("SSL scan finished.", level="info")
         return "\n".join(output_lines)
 
-
-# --- Standalone function wrapper ---
 def scan_ssl(target_url, progress_callback=None):
     """Scans the target website for SSL/TLS configurations. Wrapper for SSLChecker."""
     checker = SSLChecker(target_url, progress_callback=progress_callback)
     return checker.scan_ssl_details()
 
-# --- Example usage block ---
 if __name__ == '__main__':
     target = "https://google.com"
-    # target = "https://expired.badssl.com/"
-    # target = "https://self-signed.badssl.com/"
-    # target = "https://wrong.host.badssl.com/"
 
     print(f"--- Testing SSLChecker on {target} ---")
     def simple_callback_for_test(message):
@@ -219,5 +198,4 @@ if __name__ == '__main__':
     results = scan_ssl(target, progress_callback=simple_callback_for_test)
     print("\n--- Scan Results ---")
     print(results)
-
-# --- END OF REVISED scanner/ssl_checker.py ---
+ 

@@ -5,83 +5,61 @@ from urllib.parse import urljoin, urlparse, parse_qs, urlencode, quote
 import concurrent.futures
 import os
 import time
-import threading # For locks
+import threading
 from functools import partial
 import warnings
 
-# Assuming SQLInjectionScanner is available for form finding
 try:
     from .sql_injection import SQLInjectionScanner
 except ImportError:
-    # Fallback for running script directly or different project structure
-    # This might require adjustment based on how you run OmenSight
     print("[!] Warning: Could not import SQLInjectionScanner relatively. Trying absolute import.")
-    # If Omen_Sight is the root package and you run from there:
     from scanner.sql_injection import SQLInjectionScanner
-    # If running scanner/xss.py directly, this might fail without proper PYTHONPATH setup
-
-# Ignore InsecureRequestWarning (useful if testing against sites with self-signed certs)
 warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 
 class XSSScanner:
-    # Added progress_callback parameter
     def __init__(self, target_url, progress_callback=None):
 
         """Initializing Cross-Site Scripting Scanner"""
         self.target_url = target_url
-        self.progress_callback = progress_callback # Store callback first
-
-        # --- Configuration --- (MOVED UP)
-        # Define configuration *before* using it in _get_final_url_and_response
+        self.progress_callback = progress_callback
         self.num_threads = 20
-        self.request_timeout = 10 # Seconds
+        self.request_timeout = 10
         self.xss_payload_file = os.path.join("static", "xss_payload.txt")
         self.xss_tags_file = os.path.join("static", "xss_tags.txt")
         self.xss_events_file = os.path.join("static", "xss_events.txt")
-        self.reflection_marker = "omnsgtXSStest" # Unique marker for initial checks
-
-        # Make initial request to handle redirects before parsing
+        self.reflection_marker = "omnsgtXSStest"
         self.final_url, self.initial_response = self._get_final_url_and_response(target_url)
         if not self.final_url:
             print(f"[!] Failed to fetch initial URL: {target_url}. Aborting XSS scan.")
-            # Also report error via callback
             if self.progress_callback:
                 self.progress_callback(f"[!] XSS Error: Failed to fetch initial URL: {target_url}")
-            # Set parsed_url to avoid potential downstream errors, though scan is likely broken
             self.parsed_url = urlparse(target_url)
-            # Set session here to avoid errors if methods are called despite failure
             self.session = requests.Session()
-            self.session.verify = False # Default verify state
+            self.session.verify = False
         else:
              if self.final_url != target_url:
                   print(f"[+] Initial URL {target_url} redirected to {self.final_url}. Scanning final URL.")
              self.parsed_url = urlparse(self.final_url)
-
-             # Initialize session only after successful fetch potentially? Or keep it always initialized?
-             # Let's keep it initialized after config, before fetch.
              self.session = requests.Session()
              self.session.headers.update({
-                 "User-Agent": "OmenSight Scanner/1.0" # Identify your scanner
+                 "User-Agent": "OmenSight Scanner/1.0"
              })
-             # Disable SSL verification if needed (use with caution)
              self.session.verify = False
-
-        # --- State --- (Can remain here)
         self.found_vulnerabilities = []
-        self.vulnerabilities_lock = threading.Lock() # To safely append findings from threads
+        self.vulnerabilities_lock = threading.Lock()
         self.tags = []
         self.events = []
-        self.payloads_cache = None # Cache payloads after first load
+        self.payloads_cache = None
 
     def _get_final_url_and_response(self, url):
         """Makes an initial request allowing redirects to find the final landing URL."""
         temp_session = requests.Session()
         temp_session.headers.update({"User-Agent": "OmenSight Scanner/1.0"})
-        temp_session.verify = False # Match the main session setting
+        temp_session.verify = False
         try:
             response = temp_session.get(url, timeout=self.request_timeout, allow_redirects=True)
-            response.raise_for_status() # Check for HTTP errors
-            return response.url, response # Return final URL and the response object
+            response.raise_for_status()
+            return response.url, response
         except requests.exceptions.RequestException as e:
             print(f"[!] Error during initial fetch of {url}: {e}")
             return None, None
@@ -94,7 +72,6 @@ class XSSScanner:
         lines = []
         if not os.path.exists(filepath):
             print(f"[!] Warning: File not found: {filepath}")
-            # Also report this via callback if available
             if self.progress_callback:
                  self.progress_callback(f"[!] XSS Error: File not found: {filepath}")
             return lines
@@ -104,7 +81,6 @@ class XSSScanner:
                     stripped_line = line.strip()
                     if stripped_line and not stripped_line.startswith('#'):
                         lines.append(stripped_line)
-            # Confirmation Print (already present and correct)
             print(f"[+] Loaded {len(lines)} items from {filepath}")
             return lines
         except Exception as e:
@@ -122,19 +98,16 @@ class XSSScanner:
 
             if method.lower() == "post":
                 response = self.session.post(url, data=data, headers=req_headers,
-                                             timeout=self.request_timeout, allow_redirects=False) # No redirects during fuzzing
+                                             timeout=self.request_timeout, allow_redirects=False)
             else: # GET
                 response = self.session.get(url, params=data, headers=req_headers,
-                                            timeout=self.request_timeout, allow_redirects=False) # No redirects during fuzzing
+                                            timeout=self.request_timeout, allow_redirects=False)
             return response
         except requests.exceptions.Timeout:
-            # print(f"[-] Timeout connecting to {url}") # Can be noisy
             return None
         except requests.exceptions.RequestException as e:
-            # print(f"[-] Request error for {url}: {e}") # Can be noisy
             return None
         except Exception as e:
-            # print(f"[-] Unexpected error during request to {url}: {e}") # Can be noisy
             return None
 
     def _check_reflection(self, test_string, response):
@@ -148,14 +121,13 @@ class XSSScanner:
         finding = (
             f"[{location_type}] Potential XSS found at {location_target} "
             f"in parameter/input '{param_name}' "
-            f"with payload: {payload[:100]}{'...' if len(payload)>100 else ''} " # Truncate long payloads
+            f"with payload: {payload[:100]}{'...' if len(payload)>100 else ''} "
             f"(Triggered URL/Action: {vuln_url})"
         )
         with self.vulnerabilities_lock:
             if finding not in self.found_vulnerabilities:
-                print(f"[!] {finding}") # Print immediately
+                print(f"[!] {finding}")
                 self.found_vulnerabilities.append(finding)
-                # Also send finding to GUI via callback
                 if self.progress_callback:
                     self.progress_callback(finding)
 
@@ -170,11 +142,10 @@ class XSSScanner:
              self.progress_callback(f"[~] XSS: Fuzzing {location_type} parameter: '{param_name}' at {location_target}...")
 
         successful_tags = set()
-        successful_events = set() # Store successful 'tag event' combinations
+        successful_events = set()
         test_value_base = f"{self.reflection_marker}_{param_name}"
 
-        # --- Stage 1: Fuzz Tags ---
-        # (Code unchanged from previous version)
+
         print(f"  [>] Stage 1: Testing {len(self.tags)} tags for reflection...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads) as executor:
             future_to_tag = {}
@@ -191,16 +162,12 @@ class XSSScanner:
                     if self._check_reflection(test_payload, response):
                         successful_tags.add(tag)
                 except Exception as e:
-                     # Reduce noise: only print errors if verbose or necessary
-                     # print(f"[!] Error processing tag {tag}: {e}")
                      pass
         if not successful_tags:
             print(f"  [-] No tags reflected for parameter '{param_name}'. Skipping further fuzzing.")
             return
         print(f"  [+] Found {len(successful_tags)} reflected tags for '{param_name}'.")
 
-        # --- Stage 2: Fuzz Events ---
-        # (Code unchanged from previous version)
         print(f"  [>] Stage 2: Testing {len(self.events)} events on {len(successful_tags)} reflected tags...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads) as executor:
             future_to_event = {}
@@ -218,15 +185,12 @@ class XSSScanner:
                     if self._check_reflection(test_payload, response) or self._check_reflection(f"{event}={self.reflection_marker}", response):
                          successful_events.add(f"{tag} {event}")
                 except Exception as e:
-                    # Reduce noise
-                    # print(f"[!] Error processing event {event} for tag {tag}: {e}")
                     pass
         if not successful_events:
             print(f"  [-] No tag/event combinations reflected for parameter '{param_name}'. Skipping payload check.")
             return
         print(f"  [+] Found {len(successful_events)} reflected tag/event combinations for '{param_name}'.")
 
-        # --- Stage 3: Filter and Test Payloads ---
         if self.payloads_cache is None:
              self.payloads_cache = self._load_file_lines(self.xss_payload_file)
         if not self.payloads_cache:
@@ -251,7 +215,7 @@ class XSSScanner:
 
         # --- Payload Counter and Progress Reporting ---
         payload_counter = 0
-        reporting_interval = 200 # Report every 200 payloads
+        reporting_interval = 200
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads) as executor:
             future_to_payload = {}
@@ -265,26 +229,22 @@ class XSSScanner:
                 future = executor.submit(self._send_request, base_url, method, data=data_copy)
                 future_to_payload[future] = (payload, final_url)
 
-            # Process results and report progress
+
             for future in concurrent.futures.as_completed(future_to_payload):
                 payload, final_url = future_to_payload[future]
-                payload_counter += 1 # Increment counter for each processed future
+                payload_counter += 1
 
                 try:
                     response = future.result()
                     if self._check_reflection(payload, response):
                         self._add_vulnerability(location_type, location_target, param_name, payload, final_url)
                 except Exception as e:
-                    # Reduce noise
-                    # print(f"[!] Error processing payload '{payload[:50]}...': {e}")
                     pass
-
-                # Report progress at intervals
                 if payload_counter % reporting_interval == 0:
                     progress_msg = f"[~] XSS ({param_name}): Tested ~{payload_counter}/{len(relevant_payloads)} payloads..."
-                    print(progress_msg) # Print to terminal
+                    print(progress_msg)
                     if self.progress_callback:
-                        self.progress_callback(progress_msg) # Send to GUI via callback
+                        self.progress_callback(progress_msg)
 
         print(f"  [+] Finished testing payloads for '{param_name}'.")
 
@@ -294,8 +254,6 @@ class XSSScanner:
         print(f"\n[+] Starting XSS Scan for {self.target_url}...")
         if self.progress_callback:
              self.progress_callback(f"[+] Starting XSS Scan for {self.target_url}...")
-
-        # Handle case where initial fetch failed in __init__
         if not self.final_url or not self.initial_response:
              message = "[!] XSS Scan Aborted: Could not fetch the target URL."
              print(message)
@@ -303,10 +261,8 @@ class XSSScanner:
                   self.progress_callback(message)
              return message
 
-        self.found_vulnerabilities = [] # Reset findings
-        self.payloads_cache = None # Reset payload cache
-
-        # Load fuzzing resources
+        self.found_vulnerabilities = []
+        self.payloads_cache = None
         self.tags = self._load_file_lines(self.xss_tags_file)
         self.events = self._load_file_lines(self.xss_events_file)
 
@@ -315,10 +271,6 @@ class XSSScanner:
             print(message)
             if self.progress_callback:
                 self.progress_callback(message)
-            # Consider returning an error message instead of proceeding without tags/events
-            # return "Error: Missing essential tag/event files in static/"
-
-        # --- Initial Reflection Check for URL Parameters (using final URL) ---
         print(f"[+] Checking URL parameters in {self.final_url} for reflection...")
         base_url_path = self.parsed_url._replace(query="").geturl()
         original_params = parse_qs(self.parsed_url.query)
@@ -328,10 +280,10 @@ class XSSScanner:
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads) as executor:
                 future_to_param = {}
                 for param_name, param_values in original_params.items():
-                    if not param_values: continue # Skip empty params
+                    if not param_values: continue
                     original_value = param_values[0]
                     test_payload = f"{original_value}{self.reflection_marker}"
-                    data_copy = {k: v[0] for k, v in original_params.items() if v} # Use first value
+                    data_copy = {k: v[0] for k, v in original_params.items() if v}
                     data_copy[param_name] = test_payload
 
                     future = executor.submit(self._send_request, base_url_path, "get", data=data_copy)
@@ -345,29 +297,23 @@ class XSSScanner:
                             print(f"  [!] Initial reflection detected in URL parameter: '{param_name}'")
                             vulnerable_url_params.append(param_name)
                     except Exception as e:
-                         # Reduce noise
-                         # print(f"[!] Error during initial check for URL param '{param_name}': {e}")
+
                          pass
         else:
              print("[-] No query parameters found in the final URL.")
 
-        # --- Fuzz Vulnerable URL Parameters ---
         if vulnerable_url_params:
-            base_data_get = {k: v[0] for k, v in original_params.items() if v} # Base data for GET requests
+            base_data_get = {k: v[0] for k, v in original_params.items() if v}
             for param_name in vulnerable_url_params:
                 self._fuzz_single_param("URL", self.final_url, base_url_path, "get", param_name, base_data_get)
 
-        # --- Find and Scan Forms (using content from final URL response) ---
         print(f"\n[+] Checking forms in {self.final_url} for reflection...")
         forms = []
         try:
-            # Use the response content obtained during initial redirect handling
             soup = BeautifulSoup(self.initial_response.content, "html.parser")
             forms = soup.find_all("form")
-            # Instantiate form_finder ONLY if forms are found and needed for details
             form_finder = None
             if forms:
-                 # We need an instance, but the URL passed might not matter if we only use form_details
                  form_finder = SQLInjectionScanner(self.final_url)
 
         except Exception as e:
@@ -378,14 +324,13 @@ class XSSScanner:
             print("[-] No forms found on the page.")
         else:
             print(f"[+] Found {len(forms)} forms. Performing initial reflection checks...")
-            form_scan_jobs = [] # List of tuples: (form_target, method, input_name, base_data)
+            form_scan_jobs = []
 
             for form in forms:
                  try:
-                     if not form_finder: continue # Should not happen if forms > 0, but safety check
-                     form_details = form_finder.form_details(form) # Use method from SQLi scanner
+                     if not form_finder: continue
+                     form_details = form_finder.form_details(form)
                      form_action = form_details.get("action", "")
-                     # Use the *final* URL from the initial fetch as the base for joining
                      form_target_url = urljoin(self.final_url, form_action)
                      form_method = form_details.get("method", "get").lower()
                      form_base_data = {}
@@ -412,7 +357,6 @@ class XSSScanner:
                  except Exception as e:
                       print(f"[!] Error processing form (Action: {form.get('action', 'N/A')}): {e}")
 
-            # --- Fuzz Vulnerable Form Inputs ---
             if form_scan_jobs:
                 print(f"\n[+] Fuzzing {len(form_scan_jobs)} potentially vulnerable form inputs...")
                 if self.progress_callback:
@@ -428,25 +372,15 @@ class XSSScanner:
         if not self.found_vulnerabilities:
             final_message = "No potential XSS vulnerabilities found by reflection."
             if self.progress_callback:
-                self.progress_callback(final_message) # Send final status too
+                self.progress_callback(final_message)
             return final_message
         else:
-            # Findings already sent to GUI via callback in _add_vulnerability
-            # Just return the final summary string
             results_header = "[!] Potential XSS Vulnerabilities Found:"
             return "\n".join([results_header] + self.found_vulnerabilities)
 
-
-# Example usage (if run directly - REMOVED file creation)
 if __name__ == '__main__':
-    # Make sure static/xss_payload.txt, static/xss_tags.txt, static/xss_events.txt exist
-    target = "https://xss-game.appspot.com/level1" # Redirects to /level1/frame
-    # target = "http://testphp.vulnweb.com/search.php?test=query"
-    # target = "http://testphp.vulnweb.com/guestbook.php" # Example site with a form
-
+    target = "https://xss-game.appspot.com/level1"
     print(f"--- Testing XSS Scanner on {target} ---")
-
-    # Define a simple callback for testing if run directly
     def simple_print_callback(message):
         print(f"CALLBACK: {message}")
 
@@ -454,5 +388,4 @@ if __name__ == '__main__':
     results = scanner.scan_xss()
     print("\n--- Scan Results ---")
     print(results)
-
-# --- END OF REVISED scanner/xss.py ---
+ 
