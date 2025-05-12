@@ -1,11 +1,11 @@
-# --- START OF REVISED scanner/basic_info.py ---
+
 
 import socket
 import requests
-import whois # type: ignore # Add this if your linter complains about whois import
-import dns.resolver # type: ignore # Add this if your linter complains about dnspython
+import whois
+import dns.resolve
 from urllib.parse import urlparse, urljoin
-from bs4 import BeautifulSoup # For parsing HTML, e.g., for title
+from bs4 import BeautifulSoup
 
 class BasicInfoScanner:
     def __init__(self, target_url, progress_callback=None, request_timeout=10):
@@ -19,10 +19,7 @@ class BasicInfoScanner:
         self.session.headers.update({
             "User-Agent": "OmenSight Scanner/1.0"
         })
-        # Allow scans on sites with self-signed or problematic SSL certs
-        # Use with caution, implies not verifying SSL for this scanner's requests
         self.session.verify = False
-        # Suppress InsecureRequestWarning if verify is False
         if not self.session.verify:
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -32,7 +29,6 @@ class BasicInfoScanner:
         """Helper for logging to console and GUI callback."""
         prefix_map = {"info": "[+]", "progress": "[~]", "vuln": "[!]", "warn": "[!]", "error": "[-]"}
         prefix = prefix_map.get(level, "[?]")
-        # Construct message carefully to avoid issues if message itself contains formatting chars
         full_message = f"{prefix} BasicInfo: {message}"
         print(full_message) # Always print to console
         if self.progress_callback and level in ["progress", "info", "warn", "error"]: # GUI updates for these
@@ -69,7 +65,7 @@ class BasicInfoScanner:
 
     def get_http_info(self):
         self._log(f"Fetching HTTP info from {self.target_url}", level="progress")
-        response = self._make_request(self.target_url, allow_redirects=True) # Follow redirects for main page
+        response = self._make_request(self.target_url, allow_redirects=True) 
         info = {"title": "Not found or error", "headers": {}}
         if response and response.status_code == 200: # Check for successful response
             try:
@@ -81,7 +77,6 @@ class BasicInfoScanner:
                 else:
                     info["title"] = "No title tag found"
 
-                # Key Headers
                 key_headers = ['Server', 'X-Powered-By', 'Content-Type', 'Date', 'X-Frame-Options', 'Content-Security-Policy']
                 for kh in key_headers:
                     if kh in response.headers:
@@ -89,7 +84,7 @@ class BasicInfoScanner:
                 self._log("Successfully fetched HTTP info.", level="info")
             except Exception as e:
                 self._log(f"Error parsing HTTP info: {e}", level="error")
-                # Keep default "Not found or error" for title
+           
         elif response: # Response object exists but not 200 OK
              self._log(f"HTTP info request failed with status {response.status_code}", level="warn")
         else: # No response object
@@ -114,7 +109,6 @@ class BasicInfoScanner:
                 self._log("robots.txt not found (404).", level="info")
                 return "Not found (404)"
             else:
-                # _make_request already logged the HTTP error status
                 return f"Received Status {response.status_code}"
         else: # _make_request returned None
             return "Error: Request failed (e.g., connection, timeout)."
@@ -132,11 +126,9 @@ class BasicInfoScanner:
                 self._log("sitemap.xml not found (404).", level="info")
                 return "Not found (404)"
             else:
-                # _make_request already logged the HTTP error status
-                # self._log(f"sitemap.xml check resulted in status {response.status_code}.", level="warn")
+           
                 return f"Received Status {response.status_code}" # More accurate message
-        else: # _make_request returned None (e.g., connection error, timeout)
-            # _make_request already logged the specific connection/timeout error
+        else:
             return "Error: Request failed (e.g., connection, timeout)."
 
 
@@ -145,13 +137,10 @@ class BasicInfoScanner:
             return "Invalid domain for WHOIS lookup."
         self._log(f"Performing WHOIS lookup for {self.domain}", level="progress")
         try:
-            # Ensure domain is just the netloc, no scheme or path
             domain_for_whois = self.domain.split(':')[0] # Remove port if present
             info = whois.whois(domain_for_whois)
-            # whois library can return a complex object or sometimes None/Error
             if info and (info.domain_name or info.registrar): # Check for some actual data
                 self._log("WHOIS lookup successful.", level="info")
-                # Convert to string, limit length for display
                 str_info = str(info)
                 return str_info[:2000] + ("..." if len(str_info) > 2000 else "")
             else:
@@ -168,7 +157,7 @@ class BasicInfoScanner:
         results = {}
         record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'CNAME']
 
-        domain_for_dns = self.domain.split(':')[0] # Remove port if present
+        domain_for_dns = self.domain.split(':')[0] 
 
         for r_type in record_types:
             try:
@@ -177,7 +166,6 @@ class BasicInfoScanner:
                 if r_type == 'MX':
                     results[r_type] = sorted([f"{r.preference} {r.exchange.to_text()}" for r in answers])
                 elif r_type == 'TXT':
-                    # TXT records can be multiple strings; join them
                     results[r_type] = [" ".join(s.decode('utf-8') for s in rdata.strings) for rdata in answers]
                 else:
                     results[r_type] = sorted([r.to_text() for r in answers])
@@ -188,7 +176,6 @@ class BasicInfoScanner:
             except dns.resolver.NXDOMAIN:
                 self._log(f"Domain {domain_for_dns} does not exist (NXDOMAIN). Aborting further DNS lookups.", level="error")
                 results[r_type] = ["NXDOMAIN"]
-                # If domain doesn't exist, no point in querying other records for it
                 for rt_remaining in record_types:
                     if rt_remaining not in results: results[rt_remaining] = ["NXDOMAIN"]
                 break
@@ -205,7 +192,6 @@ class BasicInfoScanner:
             return {"error": "Invalid IP for geolocation lookup."}
         self._log(f"Performing IP geolocation lookup for {ip_address}", level="progress")
         try:
-            # Use the session for consistency, although ipinfo.io is external
             response = self.session.get(f"https://ipinfo.io/{ip_address}/json", timeout=self.request_timeout)
             response.raise_for_status()
             self._log("IP geolocation lookup successful.", level="info")
@@ -289,10 +275,8 @@ class BasicInfoScanner:
         self._log("Basic information scan finished.", level="info")
         return "\n".join(output_lines)
 
-# Example usage (if run directly)
 if __name__ == '__main__':
-    target = "https://google.com" # Example target
-    # target = "https://example.com"
+    target = "https://google.com" 
 
     print(f"--- Testing BasicInfoScanner on {target} ---")
 
@@ -304,5 +288,3 @@ if __name__ == '__main__':
 
     print("\n--- Scan Results ---")
     print(results)
-
-# --- END OF REVISED scanner/basic_info.py ---
